@@ -1,2 +1,3 @@
-# project-eos
-Creating a text editor
+# Eos
+
+A text editor
