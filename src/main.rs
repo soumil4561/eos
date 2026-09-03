@@ -1,48 +1,53 @@
+mod buffer;
+
+use buffer::vector::VectorBuffer;
+
 use std::io::{Write, stdout};
 
 use crossterm::{
     QueueableCommand,
-    cursor::{self, SetCursorStyle::DefaultUserShape},
-    event, execute,
-    style::{self, Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
-    terminal,
+    cursor::{self},
+    event::{self, KeyEvent},
+    execute,
+    style::{self, Color, Print},
+    terminal::{self, Clear, ClearType},
 };
 
 const HEADER_TEXT: &str = "Eos Text Editor";
-
 fn main() -> std::io::Result<()> {
-    // setting the background color for the whole terminal
-    setup_terminal()?;
-
     let mut str = String::from("Hello, World!\nThis is a test string.\nIt has multiple lines.\n");
 
-    //serialize to data structure
-    let mut vector = serialize_to_vector(&str)?;
+    let mut vector = VectorBuffer::from_string(&str)?;
+
+    let terminate = setup_terminal(&vector)?;
+
+    let (x, y) = cursor::position()?;
+
+    while !terminate.load(std::sync::atomic::Ordering::Relaxed) {
+        //wait for user input
+        if event::poll(std::time::Duration::from_millis(100))? {
+            let e = event::read()?;
+            match e {
+                event::Event::Key(key_event) => {
+                    handle_keyboard_input(key_event, &mut vector)?;
+                }
+                event::Event::Mouse(event) => println!("{:?}", event),
+                event::Event::FocusGained => println!("FocusGained"),
+                event::Event::FocusLost => println!("FocusLost"),
+                event::Event::Paste(_) => println!("Paste"),
+                event::Event::Resize(_, _) => println!("Resize"),
+            }
+        }
+    }
 
     //do operations on the vector
 
     //deserialize back to string
-    str = deserialize_vector_to_string(&vector)?;
-
-    std::thread::sleep(std::time::Duration::from_secs(100));
+    str = vector.to_string()?;
+    terminal::disable_raw_mode()?;
+    println!("{str}");
+    std::thread::sleep(std::time::Duration::from_secs(5));
     Ok(())
-}
-
-fn serialize_to_vector(str: &String) -> std::io::Result<Vec<String>> {
-    let mut vector = Vec::new();
-    for line in str.lines() {
-        vector.push(line.to_string());
-    }
-    Ok(vector)
-}
-
-fn deserialize_vector_to_string(vector: &Vec<String>) -> std::io::Result<String> {
-    let mut str = String::new();
-    for line in vector {
-        str.push_str(line);
-        str.push('\n');
-    }
-    Ok(str)
 }
 
 fn invert_color() -> std::io::Result<()> {
@@ -52,27 +57,111 @@ fn invert_color() -> std::io::Result<()> {
     return Ok(());
 }
 
-fn setup_terminal() -> std::io::Result<()> {
+fn setup_terminal(
+    vector: &VectorBuffer,
+) -> std::io::Result<std::sync::Arc<std::sync::atomic::AtomicBool>> {
     let mut stdout = stdout();
     stdout.queue(terminal::Clear(terminal::ClearType::All))?;
-    stdout.queue(cursor::MoveTo(0, 0))?;
+    terminal::enable_raw_mode()?;
+    let terminate = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-    //add header
-    //for the header we print a line in middle
+    signal_hook::flag::register(
+        signal_hook::consts::SIGTERM,
+        std::sync::Arc::clone(&terminate),
+    )?;
+
+    signal_hook::flag::register(
+        signal_hook::consts::SIGINT,
+        std::sync::Arc::clone(&terminate),
+    )?;
+    stdout.queue(cursor::MoveTo(0, 0))?;
     let (width, _) = terminal::size()?;
     invert_color()?;
-    // stdout.queue(cursor::SetCursorStyle(DefaultUserShape))?;
     for _ in 0..width {
         stdout.queue(Print(" "))?;
     }
     stdout.queue(cursor::MoveToNextLine(1))?;
     stdout.queue(style::ResetColor)?;
-    stdout.queue(cursor::EnableBlinking)?;
+    for (i, line) in vector.get_buffer().iter().enumerate() {
+        stdout.queue(Print(line))?;
+
+        if i < vector.get_buffer().len() - 1 {
+            stdout.queue(cursor::MoveToNextLine(1))?;
+        }
+    }
+
+    stdout.queue(cursor::SetCursorStyle::BlinkingBar)?;
+
     stdout.flush()?;
 
-    //add footer
+    Ok(terminate)
+}
 
-    //create our spacer
+fn handle_keyboard_input(key_input: KeyEvent, buffer: &mut VectorBuffer) -> std::io::Result<()> {
+    //figure out type of key_input
+    let key_code = key_input.code;
+    //2. figure out backspace/DELETE fro removal
+    match key_code {
+        event::KeyCode::Backspace => {
+            //go for removal
+            Ok(())
+        }
+        event::KeyCode::Up => {
+            execute!(stdout(), cursor::MoveUp(1))?;
+            Ok(())
+        }
+        event::KeyCode::Down => {
+            execute!(stdout(), cursor::MoveDown(1))?;
+            Ok(())
+            //arrow down
+        }
+        event::KeyCode::Left => {
+            execute!(stdout(), cursor::MoveLeft(1))?;
+            Ok(())
+            //arrow left
+        }
+        event::KeyCode::Right => {
+            execute!(stdout(), cursor::MoveRight(1))?;
+            Ok(())
+            //arrow right
+        }
+        event::KeyCode::Enter => {
+            //1. on enter move cursor down
+            //2. figure out the string size on the move next, it can be 0, or >0
+            //3. move right to next of string length
+            let (x, y) = get_cursor_pos()?;
+            buffer.insert_char('\n', x, y);
+            //get the buffer at this point
+            let buffer = buffer.get_buffer();
+            let mut stdout = stdout();
+            //1. print the new line to the new line below
+            //2. print every new line below that to take effect
+            stdout.queue(terminal::Clear(ClearType::UntilNewLine))?;
+            stdout.queue(cursor::MoveToNextLine(1))?;
+            stdout.queue(terminal::Clear(ClearType::FromCursorDown))?;
+            //start printing from that line to below
+            for i in y..buffer.len() {
+                stdout.queue(Print(&buffer[i]))?;
+                stdout.queue(cursor::MoveToNextLine(1))?;
+            }
+            stdout.queue(cursor::MoveTo(buffer[y].len() as u16, (y + 1) as u16))?;
+            stdout.flush()?;
+            Ok(())
+        }
+        event::KeyCode::Char(c) => {
+            // handle the character and its insertion
+            let (x, y) = get_cursor_pos()?;
+            buffer.insert_char(c, x, y);
+            execute!(stdout(), Print(c))?;
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 
-    Ok(())
+    //3. otherwise simply go for insertion
+}
+
+fn get_cursor_pos() -> std::io::Result<(usize, usize)> {
+    let (x, y) = cursor::position()?;
+    return Ok((x as usize, y as usize));
 }
