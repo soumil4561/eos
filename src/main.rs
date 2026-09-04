@@ -10,7 +10,7 @@ use crossterm::{
     event::{self, KeyEvent},
     execute,
     style::{self, Color, Print},
-    terminal::{self, Clear, ClearType},
+    terminal::{self, ClearType},
 };
 
 const HEADER_TEXT: &str = "Eos Text Editor";
@@ -21,15 +21,14 @@ fn main() -> std::io::Result<()> {
 
     let terminate = setup_terminal(&vector)?;
 
-    let (x, y) = cursor::position()?;
-
     while !terminate.load(std::sync::atomic::Ordering::Relaxed) {
         //wait for user input
         if event::poll(std::time::Duration::from_millis(100))? {
+            let (x, y) = get_cursor_pos()?;
             let e = event::read()?;
             match e {
                 event::Event::Key(key_event) => {
-                    handle_keyboard_input(key_event, &mut vector)?;
+                    handle_keyboard_input(key_event, &mut vector, x, y)?;
                 }
                 event::Event::Mouse(event) => println!("{:?}", event),
                 event::Event::FocusGained => println!("FocusGained"),
@@ -45,7 +44,6 @@ fn main() -> std::io::Result<()> {
     //deserialize back to string
     str = vector.to_string()?;
     terminal::disable_raw_mode()?;
-    println!("{str}");
     std::thread::sleep(std::time::Duration::from_secs(5));
     Ok(())
 }
@@ -82,10 +80,10 @@ fn setup_terminal(
     }
     stdout.queue(cursor::MoveToNextLine(1))?;
     stdout.queue(style::ResetColor)?;
-    for (i, line) in vector.get_buffer().iter().enumerate() {
-        stdout.queue(Print(line))?;
+    for i in 0..vector.size() {
+        stdout.queue(Print(vector.get_line(i)))?;
 
-        if i < vector.get_buffer().len() - 1 {
+        if i < vector.size() - 1 {
             stdout.queue(cursor::MoveToNextLine(1))?;
         }
     }
@@ -97,7 +95,12 @@ fn setup_terminal(
     Ok(terminate)
 }
 
-fn handle_keyboard_input(key_input: KeyEvent, buffer: &mut VectorBuffer) -> std::io::Result<()> {
+fn handle_keyboard_input(
+    key_input: KeyEvent,
+    buffer: &mut VectorBuffer,
+    x: usize,
+    y: usize,
+) -> std::io::Result<()> {
     //figure out type of key_input
     let key_code = key_input.code;
     //2. figure out backspace/DELETE fro removal
@@ -107,21 +110,55 @@ fn handle_keyboard_input(key_input: KeyEvent, buffer: &mut VectorBuffer) -> std:
             Ok(())
         }
         event::KeyCode::Up => {
-            execute!(stdout(), cursor::MoveUp(1))?;
+            //1. figure out current pos
+            if y <= 1 {
+                return Ok(());
+            }
+            let string = buffer.get_line(y - 2);
+            if x > string.len() {
+                execute!(
+                    stdout(),
+                    cursor::MoveTo(string.len() as u16, (y - 1) as u16)
+                )?;
+            } else {
+                execute!(stdout(), cursor::MoveUp(1))?;
+            }
             Ok(())
         }
         event::KeyCode::Down => {
+            if y == buffer.size() {
+                return Ok(());
+            }
             execute!(stdout(), cursor::MoveDown(1))?;
             Ok(())
             //arrow down
         }
         event::KeyCode::Left => {
-            execute!(stdout(), cursor::MoveLeft(1))?;
+            if x == 0 {
+                if y > 1 {
+                    execute!(
+                        stdout(),
+                        cursor::MoveTo(buffer.get_line(y - 2).len() as u16, (y - 1) as u16)
+                    )?;
+                }
+            } else {
+                execute!(stdout(), cursor::MoveLeft(1))?;
+            }
+
             Ok(())
             //arrow left
         }
         event::KeyCode::Right => {
-            execute!(stdout(), cursor::MoveRight(1))?;
+            //for each line venture till end then go below until that is also not possible...
+            let line = buffer.get_line(y - 1);
+            if x == line.len() {
+                //go below
+                if y < buffer.size() {
+                    execute!(stdout(), cursor::MoveTo(0, (y + 1) as u16))?;
+                }
+            } else {
+                execute!(stdout(), cursor::MoveRight(1))?;
+            }
             Ok(())
             //arrow right
         }
@@ -129,10 +166,8 @@ fn handle_keyboard_input(key_input: KeyEvent, buffer: &mut VectorBuffer) -> std:
             //1. on enter move cursor down
             //2. figure out the string size on the move next, it can be 0, or >0
             //3. move right to next of string length
-            let (x, y) = get_cursor_pos()?;
             buffer.insert_char('\n', x, y);
             //get the buffer at this point
-            let buffer = buffer.get_buffer();
             let mut stdout = stdout();
             //1. print the new line to the new line below
             //2. print every new line below that to take effect
@@ -140,17 +175,16 @@ fn handle_keyboard_input(key_input: KeyEvent, buffer: &mut VectorBuffer) -> std:
             stdout.queue(cursor::MoveToNextLine(1))?;
             stdout.queue(terminal::Clear(ClearType::FromCursorDown))?;
             //start printing from that line to below
-            for i in y..buffer.len() {
-                stdout.queue(Print(&buffer[i]))?;
+            for i in y..buffer.size() {
+                stdout.queue(Print(buffer.get_line(i)))?;
                 stdout.queue(cursor::MoveToNextLine(1))?;
             }
-            stdout.queue(cursor::MoveTo(buffer[y].len() as u16, (y + 1) as u16))?;
+            stdout.queue(cursor::MoveTo(0, (y + 1) as u16))?;
             stdout.flush()?;
             Ok(())
         }
         event::KeyCode::Char(c) => {
             // handle the character and its insertion
-            let (x, y) = get_cursor_pos()?;
             buffer.insert_char(c, x, y);
             execute!(stdout(), Print(c))?;
             Ok(())

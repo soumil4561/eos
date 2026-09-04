@@ -20,10 +20,6 @@ impl VectorBuffer {
         Ok(str)
     }
 
-    pub fn get_buffer(&self) -> &Vec<String> {
-        &self.buffer
-    }
-
     pub fn insert_char(&mut self, input: char, x: usize, y: usize) {
         if input == '\n' {
             //1. from col find the remaining string to be trasnported to next line
@@ -40,5 +36,9 @@ impl VectorBuffer {
     //get ith line string
     pub fn get_line(&self, i: usize) -> &String {
         return &self.buffer[i];
+    }
+
+    pub fn size(&self) -> usize {
+        return self.buffer.len();
     }
 }
