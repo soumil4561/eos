@@ -14,6 +14,7 @@ use crossterm::{
 };
 
 const HEADER_TEXT: &str = "Eos Text Editor";
+const TAB_SPACE_SIZE: u16 = 4;
 fn main() -> std::io::Result<()> {
     let mut str = String::from("Hello, World!\nThis is a test string.\nIt has multiple lines.\n");
 
@@ -103,11 +104,35 @@ fn handle_keyboard_input(
 ) -> std::io::Result<()> {
     //figure out type of key_input
     let key_code = key_input.code;
+    let mut stdout = stdout();
     //2. figure out backspace/DELETE fro removal
     match key_code {
         event::KeyCode::Backspace => {
-            //go for removal
-            Ok(())
+            buffer.remove_char(x, y - 1);
+            if x > 0 {
+                let line = buffer.get_line(y - 1);
+
+                stdout.queue(cursor::MoveLeft(1))?;
+                stdout.queue(terminal::Clear(ClearType::UntilNewLine))?;
+
+                let (i, j) = get_cursor_pos()?;
+
+                stdout.queue(Print(&line[(x - 1)..]))?;
+                stdout.queue(cursor::MoveTo(i as u16, j as u16))?;
+            } else if y > 1 {
+                let previous_line = buffer.get_line(y - 2);
+                let previous_len = previous_line.len();
+
+                stdout.queue(cursor::MoveTo(0, (y - 1) as u16))?;
+                stdout.queue(terminal::Clear(ClearType::FromCursorDown))?;
+
+                for i in y - 2..buffer.size() {
+                    stdout.queue(Print(buffer.get_line(i)))?;
+                    stdout.queue(cursor::MoveToNextLine(1))?;
+                }
+
+                stdout.queue(cursor::MoveTo(previous_len as u16, (y - 1) as u16))?;
+            }
         }
         event::KeyCode::Up => {
             //1. figure out current pos
@@ -116,36 +141,34 @@ fn handle_keyboard_input(
             }
             let string = buffer.get_line(y - 2);
             if x > string.len() {
-                execute!(
-                    stdout(),
-                    cursor::MoveTo(string.len() as u16, (y - 1) as u16)
-                )?;
+                stdout.queue(cursor::MoveTo(string.len() as u16, (y - 1) as u16))?;
             } else {
-                execute!(stdout(), cursor::MoveUp(1))?;
+                stdout.queue(cursor::MoveUp(1))?;
             }
-            Ok(())
         }
         event::KeyCode::Down => {
             if y == buffer.size() {
                 return Ok(());
             }
-            execute!(stdout(), cursor::MoveDown(1))?;
-            Ok(())
+            let line = buffer.get_line(y);
+            if x > line.len() {
+                stdout.queue(cursor::MoveTo(line.len() as u16, (y + 1) as u16))?;
+            } else {
+                stdout.queue(cursor::MoveDown(1))?;
+            }
             //arrow down
         }
         event::KeyCode::Left => {
             if x == 0 {
                 if y > 1 {
-                    execute!(
-                        stdout(),
-                        cursor::MoveTo(buffer.get_line(y - 2).len() as u16, (y - 1) as u16)
-                    )?;
+                    stdout.queue(cursor::MoveTo(
+                        buffer.get_line(y - 2).len() as u16,
+                        (y - 1) as u16,
+                    ))?;
                 }
             } else {
-                execute!(stdout(), cursor::MoveLeft(1))?;
+                stdout.queue(cursor::MoveLeft(1))?;
             }
-
-            Ok(())
             //arrow left
         }
         event::KeyCode::Right => {
@@ -154,12 +177,11 @@ fn handle_keyboard_input(
             if x == line.len() {
                 //go below
                 if y < buffer.size() {
-                    execute!(stdout(), cursor::MoveTo(0, (y + 1) as u16))?;
+                    stdout.queue(cursor::MoveTo(0, (y + 1) as u16))?;
                 }
             } else {
-                execute!(stdout(), cursor::MoveRight(1))?;
+                stdout.queue(cursor::MoveRight(1))?;
             }
-            Ok(())
             //arrow right
         }
         event::KeyCode::Enter => {
@@ -168,7 +190,6 @@ fn handle_keyboard_input(
             //3. move right to next of string length
             buffer.insert_char('\n', x, y);
             //get the buffer at this point
-            let mut stdout = stdout();
             //1. print the new line to the new line below
             //2. print every new line below that to take effect
             stdout.queue(terminal::Clear(ClearType::UntilNewLine))?;
@@ -180,19 +201,24 @@ fn handle_keyboard_input(
                 stdout.queue(cursor::MoveToNextLine(1))?;
             }
             stdout.queue(cursor::MoveTo(0, (y + 1) as u16))?;
-            stdout.flush()?;
-            Ok(())
         }
         event::KeyCode::Char(c) => {
             // handle the character and its insertion
             buffer.insert_char(c, x, y);
-            execute!(stdout(), Print(c))?;
-            Ok(())
+            // execute!(stdout(), Print(c))?;
+            stdout.queue(Print(c))?;
         }
-        _ => Ok(()),
+        event::KeyCode::Tab => {
+            for _ in 0..TAB_SPACE_SIZE {
+                buffer.insert_char(' ', x, y);
+            }
+            stdout.queue(cursor::MoveRight(TAB_SPACE_SIZE))?;
+        }
+        _ => {}
     }
 
-    //3. otherwise simply go for insertion
+    stdout.flush()?;
+    Ok(())
 }
 
 fn get_cursor_pos() -> std::io::Result<(usize, usize)> {

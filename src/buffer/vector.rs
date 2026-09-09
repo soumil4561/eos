@@ -31,7 +31,16 @@ impl VectorBuffer {
         }
     }
 
-    pub fn remove_char(&self, x: usize, y: usize) {}
+    pub fn remove_char(&mut self, x: usize, y: usize) {
+        if x > 0 {
+            self.buffer[y].remove(x - 1);
+        } else {
+            if y > 0 {
+                let line = self.buffer.remove(y);
+                self.buffer[y - 1].push_str(&line);
+            }
+        }
+    }
 
     //get ith line string
     pub fn get_line(&self, i: usize) -> &String {
